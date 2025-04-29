@@ -1,0 +1,65 @@
+#Qd-tree :
+
+->   Qd-tree is a learned data layout technique that organizes data into blocks using a binary decision tree built from simple query predicates like X < 50 or X < Y. Each inner node in the tree represents a condition (called a "cut") 
+     that splits data into two parts: tuples that satisfy the condition and those that don't. This layout helps prune unnecessary blocks during query execution by following only the relevant branches of the tree. However, Qd-tree focuses 
+     only on basic predicates and single-condition splits.
+->   At execution time, a query traverses the tree to find the blocks that need to be scanned. At any given node, if the query intersects only one of the cut or its negation, only the corresponding child node is
+     traversed. Otherwise, both children are traversed.
+
+
+MTO : 
+
+  Query  :  SELECT * FROM T1 JOIN T2 ON T1.Key = T2.Key WHERE T1.X < 50 AND T2.Y > 75  
+
+  ->  For T1’s Qd-Tree:
+                     Adds T1.Key IN (SELECT T2.Key FROM T2 WHERE T2.Y > 75) as a virtual predicate.
+                     Partitions T1 to group rows likely to match T2.Y > 75.
+ 
+  ->  For T2’s Qd-Tree:
+                    Adds T2.Key IN (SELECT T1.Key FROM T1 WHERE T1.X < 50) as a virtual predicate.
+                    Partitions T2 to group rows likely to match T1.X < 50.
+
+  ->  During splits, MTO considers: Traditional single-table filters (e.g., T1.X < 50) and Join-induced predicates (e.g., T1.Key matching T2.Y > 75).
+
+
+NOTE : MTO and Qd-tree both use one decision tree to organize the data in a table. This tree does two jobs:
+         1). Splits the data into blocks based on conditions (like price < 50 or distance < 10), and
+         2). Helps skip blocks during a query by using those same conditions.
+
+=>  But in cloud systems (like AWS or GCP), the size of each data block is very large—millions of rows. That means the tree can't go very deep, because each leaf must cover a huge chunk of data. 
+    So, the number of conditions (like price < 50, distance < 10, rating > 4, etc.) you can include in the tree is limited.
+=>  This becomes a problem when queries use multiple filters on different columns that often occur together (like price < 50 and distance < 10). Since the tree can't hold too many expressions, it can't split the 
+    data finely enough to skip lots of blocks. As a result, more data gets scanned, which makes queries slower.
+
+
+Consider a workload with 2 kinds of queries uniformly distributed in the data space. Half the queries have a range predicate on column X and the other half have a range predicate on Y with small range 
+
+Figure 2b: Qd-tree / MTO
+- One tree is built using predicates like X < 50, Y < 25, Y < 75.
+- This single tree structure is used for partitioning data and indexing.
+- Blocks like B0, B1, B2, B3 are created based on this single decision path.
+- Problem: Since the tree has to mix X and Y filters on the same path, it can't adapt well to queries focused on just one column.
+
+Example:
+For a query like 5 < X < 10:
+It must go through the root node X < 50 (which is fine).
+But then it has to also check Y < 25 or Y < 75 — even though the query says nothing about Y! This causes unnecessary block scanning (see how B0 and B2 are accessed).
+
+Pando builds two separate trees — one for each common predicate group:
+   1. Tree 1 (orange): optimized for queries on X (e.g., X < 25, X < 75)
+   2. Tree 2 (blue): optimized for queries on Y (e.g., Y < 25, Y < 75)
+
+Each tree has its own structure and logic, meaning the data is logically partitioned in two ways.
+
+How it helps:
+  1. A query like 5 < X < 10 can now only use the X-tree — no need to check Y at all.
+  2. Similarly, queries with just Y filters use the Y-tree.
+This makes block scanning more accurate and efficient.
+
+Example : let's say query include x < 20 and y > 50  =>  Pando has two trees — one for X, one for Y.
+     ->  X-tree: You follow the path for X < 25 → this includes blocks B₀ , B₄
+     ->  Y-tree: You follow the path for Y > 50 → depending on tree logic, this may align with blocks like B₂, B₄, B₃.
+     ->  Intersection = {B₄} So, only block B₄ is scanned for this query.
+
+IMP  ::  So even though each query accesses 2/5 of the data (vs. 1/2 in QD-tree), fewer leaf nodes are traversed, making queries faster.
+
