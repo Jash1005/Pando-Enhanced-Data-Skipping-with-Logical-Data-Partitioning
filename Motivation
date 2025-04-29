@@ -33,4 +33,33 @@ NOTE : MTO and Qd-tree both use one decision tree to organize the data in a tabl
 
 
 Consider a workload with 2 kinds of queries uniformly distributed in the data space. Half the queries have a range predicate on column X and the other half have a range predicate on Y with small range 
-![Image](https://github.com/user-attachments/assets/e17e8664-26a4-41c9-931a-d8e4c6c8d43a)
+
+Figure 2b: Qd-tree / MTO
+- One tree is built using predicates like X < 50, Y < 25, Y < 75.
+- This single tree structure is used for partitioning data and indexing.
+- Blocks like B0, B1, B2, B3 are created based on this single decision path.
+- Problem: Since the tree has to mix X and Y filters on the same path, it can't adapt well to queries focused on just one column.
+
+Example:
+For a query like 5 < X < 10:
+It must go through the root node X < 50 (which is fine).
+But then it has to also check Y < 25 or Y < 75 — even though the query says nothing about Y! This causes unnecessary block scanning (see how B0 and B2 are accessed).
+
+Pando builds two separate trees — one for each common predicate group:
+   1. Tree 1 (orange): optimized for queries on X (e.g., X < 25, X < 75)
+   2. Tree 2 (blue): optimized for queries on Y (e.g., Y < 25, Y < 75)
+
+Each tree has its own structure and logic, meaning the data is logically partitioned in two ways.
+
+How it helps:
+  1. A query like 5 < X < 10 can now only use the X-tree — no need to check Y at all.
+  2. Similarly, queries with just Y filters use the Y-tree.
+This makes block scanning more accurate and efficient.
+
+Example : let's say query include x < 20 and y > 50  =>  Pando has two trees — one for X, one for Y.
+     ->  X-tree: You follow the path for X < 25 → this includes blocks B₀ , B₄
+     ->  Y-tree: You follow the path for Y > 50 → depending on tree logic, this may align with blocks like B₂, B₄, B₃.
+     ->  Intersection = {B₄} So, only block B₄ is scanned for this query.
+
+IMP  ::  So even though each query accesses 2/5 of the data (vs. 1/2 in QD-tree), fewer leaf nodes are traversed, making queries faster.
+
