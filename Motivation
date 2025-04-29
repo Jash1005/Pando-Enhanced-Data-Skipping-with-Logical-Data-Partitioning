@@ -1,0 +1,36 @@
+Qd-tree :
+
+->   Qd-tree is a learned data layout technique that organizes data into blocks using a binary decision tree built from simple query predicates like X < 50 or X < Y. Each inner node in the tree represents a condition (called a "cut") 
+     that splits data into two parts: tuples that satisfy the condition and those that don't. This layout helps prune unnecessary blocks during query execution by following only the relevant branches of the tree. However, Qd-tree focuses 
+     only on basic predicates and single-condition splits.
+->   At execution time, a query traverses the tree to find the blocks that need to be scanned. At any given node, if the query intersects only one of the cut or its negation, only the corresponding child node is
+     traversed. Otherwise, both children are traversed.
+
+
+MTO : 
+
+  Query  :  SELECT * FROM T1 JOIN T2 ON T1.Key = T2.Key WHERE T1.X < 50 AND T2.Y > 75  
+
+  ->  For T1’s Qd-Tree:
+                     Adds T1.Key IN (SELECT T2.Key FROM T2 WHERE T2.Y > 75) as a virtual predicate.
+                     Partitions T1 to group rows likely to match T2.Y > 75.
+ 
+  ->  For T2’s Qd-Tree:
+                    Adds T2.Key IN (SELECT T1.Key FROM T1 WHERE T1.X < 50) as a virtual predicate.
+                    Partitions T2 to group rows likely to match T1.X < 50.
+
+  ->  During splits, MTO considers: Traditional single-table filters (e.g., T1.X < 50) and Join-induced predicates (e.g., T1.Key matching T2.Y > 75).
+
+
+NOTE : MTO and Qd-tree both use one decision tree to organize the data in a table. This tree does two jobs:
+         1). Splits the data into blocks based on conditions (like price < 50 or distance < 10), and
+         2). Helps skip blocks during a query by using those same conditions.
+
+=>  But in cloud systems (like AWS or GCP), the size of each data block is very large—millions of rows. That means the tree can't go very deep, because each leaf must cover a huge chunk of data. 
+    So, the number of conditions (like price < 50, distance < 10, rating > 4, etc.) you can include in the tree is limited.
+=>  This becomes a problem when queries use multiple filters on different columns that often occur together (like price < 50 and distance < 10). Since the tree can't hold too many expressions, it can't split the 
+    data finely enough to skip lots of blocks. As a result, more data gets scanned, which makes queries slower.
+
+
+Consider a workload with 2 kinds of queries uniformly distributed in the data space. Half the queries have a range predicate on column X and the other half have a range predicate on Y with small range 
+![Image](https://github.com/user-attachments/assets/e17e8664-26a4-41c9-931a-d8e4c6c8d43a)
