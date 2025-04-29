@@ -1,0 +1,55 @@
+Traditional databases usually partition data within a single table (e.g., just Trips, or just Orders), and focus on one attribute (e.g., date or location_id). But real-world analytical queries often:
+  -> Join multiple tables (e.g., Orders JOIN Customers JOIN Products)
+  -> Filter across several attributes
+  -> Have complex patterns, not just simple one-column filters.
+
+👉 MTO asks: Instead of optimizing one table at a time, why don't we co-optimize how related tables are stored together based on the queries?
+
+
+Trips table (fact table):
+                    trip_id (ID of the trip)
+                    pickup_time (Time when the ride was picked up)
+                    fare_amount (Total fare of the trip)
+                    pickup_location_id (Location where the ride started)
+                    dropoff_location_id (Location where the ride ended)
+
+Locations table (dimension table):
+                    location_id (ID of the location)
+                    location_name (Name of the location)
+                    zone (Geographical zone the location belongs to)
+
+Query : SELECT * FROM Trips T JOIN Locations L ON T.pickup_location_id = L.location_id WHERE T.fare_amount > 20 AND T.pickup_time BETWEEN '2023-01-01' AND '2023-01-31';
+
+1. Workload Profiling : Our actual workload of queries are 
+                        ->  Join of Trip and Location Table , 
+                        ->  T.fare_amount > 20 and T.pickup_time BETWEEN '2023-01-01' AND '2023-01-31' (similar to vacation time when everyone wants to go for trip in some particular cities)
+                        ->  MTO will collect data about which tables are being joined and which filters are used frequently.
+
+2. Cross-Table Data Colocation : 
+   Instead of optimizing individual tables, MTO focuses on colocating related data from different tables into the same physical storage blocks. 
+   This reduces I/O time when these tables need to be joined or filtered together.
+
+   How ?? 
+   Given the frequent join on pickup_location_id and location_id between the Trips and Locations tables, MTO will group all rows from Trips with the same pickup_location_id
+   and their matching Locations rows (based on location_id) into adjacent blocks.
+   Example :  
+              -> Block 1 might store all Trips with pickup_location_id = 123 and the corresponding Locations rows with location_id = 123.
+              -> Block 2 might store all Trips with pickup_location_id = 124 and the corresponding Locations rows with location_id = 124.
+   Now if i want join between pickup_location_id and location_id than i will just visit one of block and do join as this block will have all information needed for this join.
+
+3. Adaptive Layout Selection : 
+   As we know data can be partitioned on two ways : Horizontal and Vertical Partitioning. MTO dynamically selects the optimal storage format (row-store vs. column-store) for each block based 
+   on the query patterns and the types of data being accessed.
+
+  a) Row store : SELECT * FROM Trips WHERE trip_id = 12345;
+  b) Column store : SELECT avg(fare_amount) FROM Trips WHERE pickup_time BETWEEN '2023-01-01' AND '2023-01-31';  => Used for queries that need only a subset of columns, such as aggregate queries or range queries.
+
+
+4. Runtime Reorganisation : 
+  ->  In real-world scenarios, data is continuously added or updated, causing query workloads to evolve over time—therefore, the storage layout must also adapt dynamically to maintain optimal performance.
+  ->  Unlike static partitioning methods, MTO dynamically reorganizes the layout as new queries arrive. This allows the system to adapt to changing query patterns without manual intervention.
+
+  Old workload looks like : SELECT * FROM Trips WHERE pickup_location_id = 123;
+  New workload looks like : SELECT * FROM Trips WHERE pickup_time BETWEEN '08:00' AND '09:00' AND fare > 20;
+
+So MTO notices this shift and reorganizes the data blocks to group: All trips between 8–9 AM , With fare > 20 into the same blocks.
