@@ -40,6 +40,8 @@ Figure 2b: Qd-tree / MTO
 - Blocks like B0, B1, B2, B3 are created based on this single decision path.
 - Problem: Since the tree has to mix X and Y filters on the same path, it can't adapt well to queries focused on just one column.
 
+![Pando Architecture](./Screenshot 2025-04-29 152736.png "System Design")
+
 Example:
 For a query like 5 < X < 10:
 It must go through the root node X < 50 (which is fine).
