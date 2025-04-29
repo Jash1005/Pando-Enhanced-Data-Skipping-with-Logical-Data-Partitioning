@@ -1,0 +1,49 @@
+->  Qd-Tree is a query-aware, hierarchical partitioning scheme. 
+->  It uses machine learning (just like Decision Tree) to learn from frequent query predicates and then builds a tree-based partitioning of the dataset to minimize data scanned during query processing.
+->  Each internal node in the Qd-Tree represents a split condition based on a frequent query predicate (e.g., price < 100), and each leaf node contains a data block with tuples that match that path.
+
+How it works ?? 
+         1.  Workload Analysis  -  Monitor query logs to identify frequent filter predicates.
+         2.  Select Split Points  -  Choose the most discriminative predicates (i.e., those that help reduce block size the most).
+         3.  Partition Data  -  Different levels split on different columns and conditions depending on what helps most efficiently separate the data.
+         4.  Assign Tuples to Blocks  -  Tuples are assigned to leaf blocks based on the path of matching predicates.
+         5.  Query Execution  -  During query time, the tree is traversed to find which blocks to scan. If a block’s conditions don’t intersect the query, it's skipped entirely.
+
+NOTE ::  Can distance and cost on same level ?? what if query comes of dist < 8 than we have to scan both sides right !!
+         Answer :  Yes, they technically can—but Qd-Tree usually avoids that.
+                   Qd-Tree builds a binary decision tree, and each level only splits on one predicate (like distance < 5), not multiple columns simultaneously.
+                   So if you split on distance < 5 at one level, you won't split on cost at the same level—you do it in the next level for the relevant child node.
+
+         [pickup_time < 9AM]
+           /              \
+     Yes /                \ No
+       /                    \
+[distance < 5]       [cost < 10]
+   /     \               /     \
+Block1  Block2       Block3  Block4
+
+
+Example : 
+
+Sales dataset (id, price, category, region)
+Workload : Frequent queries filter by price and category.
+
+        [price < 100]
+           /       \
+     Yes /         \ No
+       /             \
+[category = Books]  [category = Electronics]
+     /      \           /         \
+   Block1  Block2    Block3     Block4
+
+
+Query 1 : SELECT * FROM sales WHERE price >= 100 AND category = 'Electronics'   => works very effective, only scans 1/4 of block
+Query 2 : SELECT * FROM sales WHERE price < 120 AND category = 'Books'   =>  We need to scan both B1 , ( B3 & B4 ) as they might have price = 100 to 119 data
+Query 3 : SELECT * FROM sales WHERE category = 'Clothing'   =>  This filter doesn’t match any decision node in the tree. We’ll need to scan all blocks to find matching records.
+Query 4 : SELECT * FROM sales WHERE price < 100 AND category IN ('Books', 'Stationery')  =>  The category split only checks for 'Books'— so Stationery is in the non-'Books' branch. We need to scan both Block1 and Block2. Again, Qd-Tree helps partially—but doesn’t distinguish well when predicates are broader than the split (like IN queries).
+
+Summary : Qd-Tree optimizes for common filters, but when:
+-> Predicate thresholds differ (e.g., price < 120 vs split at price < 100)
+-> Filter columns are unoptimized (category = 'Clothing' not in the tree)
+-> Or filters are broad (e.g., category IN (...))
+it still needs to scan multiple blocks.
