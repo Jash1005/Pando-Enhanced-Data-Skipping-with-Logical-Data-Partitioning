@@ -1,0 +1,15 @@
+ 1. How Pando Stores Data
+    -> Pando stores each table's data as compressed columnar blocks
+    -> Each physical block contains tuples from only one table
+
+ Doubt ?? what about join that we studied if one block contain same table data  =>  Stores the join predicate (a cross-table condition) inside the index tree of T1, but still only stores T1's tuples in the blocks.
+
+2. How Pando Builds Indexes
+   -> For each table, Pando builds 𝑘 logical partitioning trees.
+   -> Each tree is a binary tree. Each node in the tree is a predicate, called a cut ( condition that splits data logically ).
+
+3. What Do the Leaf Nodes Represent?
+   -> Each leaf in the tree represents a specific logical expression built by combining all the predicates along the path from the root to the leaf.
+   -> Each leaf node has a list of blocks (e.g., B0, B4) that contain tuples matching its expression.
+   -> Some blocks may contain extra rows that don't satisfy the expression. But no blocks are missed — all relevant ones are included.
+
