@@ -1,0 +1,23 @@
+ 1. Layout Optimizer  ->  This component is responsible for deciding how to organize the data and what indexes (trees) to build before queries run.
+
+    Input  ::   -> multi-table dataset
+                -> sample of expected queries (workload) 
+                -> min block size
+                -> number of index tree to be made
+
+    What it does  ::   -> all blocks are disjoint (no row in more than one block)
+                       -> builds more than one binary partitioning tree
+                       -> chooses tree expression based on workload
+                       -> Optimizes everything to minimize the number of blocks scanned during queries
+
+Think like "Before running queries, how can I arrange the data and indexes to make future queries faster?"
+
+
+2. Query Executor  ->  This component is in charge of executing incoming queries using the optimized layout.
+
+   When queries arrive ::   -> it checks each indexed tree to see which blocks to scan
+                            -> Each tree gives a list of candidate blocks
+                            -> The executor combines the results smartly (e.g., intersecting or unioning) to avoid reading unnecessary data
+
+   Goal  ::  -> Access as few blocks as possible
+             -> Answer queries quickly                         
