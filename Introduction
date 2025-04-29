@@ -1,0 +1,58 @@
+->   Modern data warehouses use a variety of techniques like horizontal and vertical partitioning, clustered indexes, sort orders, etc. to avoid scanning unnecessary data during query processing.
+->   A block is the smallest unit of I/O, i.e., a block is either skipped or scanned entirely at query time.
+->   Minimize the amount I/O performed, DBMS maintain metadata such as block indexes, per-block statistics, etc. along with the data to skip accessing irrelevant blocks during query execution.
+
+1. Range Partitioning :
+
+    Only helps with queries that filter on the partitioned columns
+    Creates partitions based on value ranges of specific columns
+    When a query filters on these partitioned columns, the system can skip entire partitions/blocks that don't contain relevant data
+
+    Example :  
+           1. SELECT * FROM sales WHERE sale_date BETWEEN '2023-05-01' AND '2023-05-31';    =>  It skips all other partitions (Jan-Apr, Jun-Dec) and Only 1 out of 12 partitions is read → 11/12 blocks skipped!
+           2. SELECT * FROM sales WHERE product_id = 100;     =>  The table is partitioned by sale_date, not product_id. The database doesn’t know which blocks contain product_id = 100. It must scan all 100 blocks (no skipping).      
+
+2. Per-Block Min-Max Metadata (Commercial Systems)
+
+                          Block	       sale_date (min-max)	           product_id (min-max)	     price (min-max)
+                            1	         2023-01-01 to 2023-01-10	         1 to 100	                 10 to 500
+                            2	         2023-01-11 to 2023-01-20          50 to 150	               200 to 800
+                           ...             	...	                           ...                      	...
+                           100         2023-12-21 to 2023-12-31        	900 to 1000	               50 to 1000
+
+          Query 1  :  SELECT * FROM sales WHERE sale_date BETWEEN '2023-05-01' AND '2023-05-31';  =>  The optimizer checks min-max ranges of sale_date in each block.
+          Query 2  :  SELECT * FROM sales WHERE product_id = 100;      =>   Block 1: product_id ranges from 1 to 100 → might contain 100 (must read)      =>  some blocks are skipped
+                                                                            Block 2: product_id ranges from 50 to 150 → might contain 100 (must read)
+                                                                            Block 100: product_id ranges from 900 to 1000 → cannot contain 100 (SKIP!)
+
+
+ ->  Modern applications generate queries that involve complex predicates that are often correlated with each other,  For example, queries with filters DISTANCE(start_point,end_point) < 3 miles and cost < $7 on an NYC Taxi dataset will select similar tuples.
+ ->  Pando is able to deliver substantially better block skipping than past methods by informing physical layout decisions with correlation-aware logical partitioning. Pando takes advantage of correlated predicates
+     by creating multiple logical partitionings to minimize I/O for a variety of queries.
+ ->  To ensure good performance, each logical partition should map to only a few data blocks, i.e., the physical data layout has to align well with the logical partition boundaries.
+ ->  Pando optimizes the physical data layout to maximize the utility of these logical indexes while handling outlier tuples in separate outlier partitions. For example, the high-cost / low-distance and low-cost / high-distance
+     rides might be stored together in an outlier partition. 
+ ->  The leaves of these trees point to the physical blocks that contain the logical ranges in the tree nodes. At execution time, these expressions are intersected with the query filters to skip blocks that do not intersect with the query.
+
+
+Bell Number  :  The number of ways to partition n tuples into blocks is given by the Bell number, which grows faster than exponential.
+               
+        
+1. Partitioning Explosion :
+               How should you split data into blocks?  
+                    By fare? 
+                    By distance?
+                    First by fare, then distance?
+                    Should $6 fare rides go with $7 or with $3 rides?
+2.  Index Tree Explosion  : 
+              After partitioning, how do you organize the blocks?
+                    Should the tree split first on fare, then distance?
+                    Or distance first?
+                    What if pickup_time is more useful? 
+
+
+Summary :
+  (1)  We present Pando, a metadata-rich correlation-aware data layout that jointly optimizes the selection of multiple logical partitioning trees and the physical data layout to enhance query performance by reducing the amount of data accessed.
+  (2) We provide an efficient heuristic algorithm to determine a good set of partitioning trees and the assignment of tuples to blocks for a given dataset and workload.
+  (3) Finally, we demonstrate that Pando outperforms other layouts across a range of real-world and benchmark datasets and workloads. Pando is up to 2.3X faster in overall query execution time and reduces the number of blocks scanned
+      by upto 2.8X when compared to the state-of-the-art learned data layout, MTO.
