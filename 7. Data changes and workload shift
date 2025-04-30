@@ -1,0 +1,143 @@
+In real life systems, two things evolve over time:
+       1. The data — new rows get added, existing rows get updated or deleted.
+       2. The workload — the types of queries being run may change.
+
+# Data changes :: 
+        Pando supports:
+             1. Bulk updates (e.g., loading a new dataset every night)
+             2. Regular updates (e.g., users inserting or modifying records)
+        To manage this both Pando uses delta approach => it is fast,temporary storage structure where small operations like update/delete/insert happens. 
+                                                      => Periodically the system (a) read all changes from delta store 
+                                                                                 (b) Applies them to the main store (adding, updating, or deleting)
+                                                                                 (c) Rewrites or reorganizes the main store to keep it sorted or partitioned properly
+        This process is called a merge, and it happens in batches (e.g., once per hour or day) — not after every change.
+        Whenever new data comes or updated, it should be partitioned and block should be allocated to it. This require lots of computation, it may happen that the existing block has to be reorganised.
+
+  1) Data Updates : 
+         -> Pando creates partitioning trees for each table, and these trees may use join-induced predicates — meaning a filter condition in one table depends on the data in another table.
+
+        Example : T1.Key IN (SELECT T2.Key FROM T2 WHERE T2.X > 10)  -> T2.X > 10 gave us T2.Key ∈ {1, 2, 7}
+                                                                     -> Tuples in T1 are assigned to blocks based on this cut, and the tree's leaf nodes point to physical blocks accordingly.
+                  Suppose new value is inserted into T2 (Key: 10, X: 15) ->  SELECT T2.Key WHERE T2.X > 10 → (1, 2, 7, 10)
+                                                                         ->  T1.Key IN (1, 2, 7, 10)
+                  But the partitioning tree still thinks it’s just (1, 2, 7) — it’s out of date. This is what we mean by: The mapping from leaf nodes to physical blocks becomes stale.
+        
+        Why is this a problem?
+            - The stale mapping may cause queries to miss relevant blocks, or worse, return incorrect results.
+            - To fix it, Pando needs to remap the leaf nodes (i.e., re-evaluate which data blocks correspond to which expressions).
+            - But this can be expensive, especially if data is updated frequently.
+
+   2) The Solution: Use Foreign Key → Primary Key Direction Only 
+
+        -> To avoid this problem, Pando restricts the use of join-induced predicates in a very specific way:
+                a.  Only allow cuts in T1 based on T2, when:
+                     - T1.Key is a foreign key
+                     - T2.Key is the primary key
+                     - So T1 → T2 is a foreign key → primary key relationship
+             This means: Pando will use T2 data to partition T1. But won’t use T1 data to partition T2
+
+        Looking confusing ?? 
+             T1.Key IN (SELECT T2.Key FROM T2 WHERE T2.X > 10)
+             SELECT T2.Key WHERE X > 10 → (2, 3)
+             T1.Key IN (2, 3)
+
+             Inserting new row in T2 = (4, 25);
+             SELECT T2.Key WHERE X > 10 → (2, 3, 4)   => result changed       => That new T2.Key = 4 will only matter if some tuple in T1 has Key = 4.
+                                                                              => But T1 doesn't know about Key = 4 yet.
+                                                                              => So the existing T1 data is still correctly partitioned.
+                                                                              => The cut T1.Key IN (2, 3) in the tree is logically stale, but no incorrect data is 
+                                                                                 returned because T1 has no data matching the new key yet.
+
+
+Challenge 1 : Maintaining Join-Induced Predicates
+
+T1.Key IN (SELECT T2.Key FROM T2 WHERE T2.X > 10)
+- Store a literal version of the join condition in node at which block is mapped -> To save space, store it as a compressed bitmap
+- When a new row is inserted into T2, say (Key:10, X:15): Pando only evaluates the predicate on that new row, not the whole T2 table. If the new row qualifies (X > 10), then update the cut: 
+                                                                                                                                      -> From T1.Key IN (1, 2, 7) → T1.Key IN (1, 2, 7, 10)
+                                                                                                                                      -> So Pando incrementally maintains these cuts, which keeps routing efficient.
+
+Challenge 2 : No Unique Block for Insert
+
+We know that Pando uses k-tree for a table. Now let's say new tupple arrives so we will go through all k-trees. In each tree it will reach at some nodes (mapping to one or more blocks).
+But combining all trees gives a set of possible matching blocks — not a single block
+- Tree1 says tuple should belong to {B1,B4}
+- Tree2 says tuple should belong to {B2,B4}
+- The intersection is {B4} — that's the likely target block.
+
+What if there is no intersection ?  = some more information is needed to do this
+                                    = sometime it approximate its position or keep tuple in delta store
+
+
+Challenge 3 : when data is out of distribution
+- If your partitioning/indexing was optimized based on older data, the layout may not work well for: new data or New query patterns (e.g., now most queries filter on today’s data)
+
+Strategy 1 : The system automatically creates new partitions (chunks of data) based on a natural time-based column, like date or timestamp. This happens during bulk ETL jobs, which already separate data by day.
+Strategy 2 : Inside each new partition, Pando runs its layout optimizer (partitioning trees, block organization). This helps build efficient query structures tailored to each day’s data.
+
+What if data is out-of-order => they are temporary stored in buffer and periodically merged.
+
+IMP :: 
+ Pando separates:
+     1. Logical partitioning: how trees/indexes define logical subspaces
+     2. Physical partitioning: how tuples are actually stored in blocks
+
+This gives flexibility:
+    1. Logical structures (trees) can evolve without moving data
+    2. Physical blocks can be reorganized only when necessary
+
+
+EXAMPLE:
+
+If the original logical trees were built using `region` and `amount`, but queries now filter on `date`, then block skipping becomes poor — because:
+
+- The physical blocks are arranged for `region/amount`
+- And `date` values may be scattered across many blocks
+- So a filter like `WHERE date = '2023-12-02'` might touch most blocks, even though only a small subset of data is needed
+
+
+
+##  So, What Can Pando Do?
+
+Pando handles this by monitoring workload shifts and then re-optimizing as needed. Here's how it can work:
+
+##  1. Detect Query Pattern Shift
+
+Pando keeps track of:
+- What predicates queries use most often
+- How effective current layouts are at skipping blocks
+
+If many recent queries filter by `date`, and skipping performance drops (i.e., too many blocks scanned), then Pando knows:
+> “My `region/amount` partitioning trees are no longer helpful.”
+
+## 2. Rebuild Logical Trees (Lightweight Step)
+
+Pando can build new trees** based on the new workload, e.g.:
+
+- Replace the `region` tree with a `date` tree
+- Keep the `amount` tree if still useful
+- These are logical changes only, no data is moved yet
+
+So now, the system has new trees optimized for: sql WHERE date = '2023-12-02'
+
+
+### 3. Remap Logical Trees to Existing Blocks
+
+Here’s the catch:
+- The data is physically still laid out for `region`
+- So the new `date`-based trees might point to many scattered blocks
+
+This hurts performance.
+
+##  4. (Optional) Physical Reorganization
+
+If the performance degradation is significant, Pando can:
+- Repartition blocks physically (e.g., group tuples with similar `date`)
+- Write new blocks (e.g., for all data with `date = '2023-12-02'`)
+- Update the mapping from logical trees to blocks
+
+This is done per partition (e.g., per day’s worth of data), so it’s efficient and localized.
+
+This is where two-level partitioning helps:
+- First level: by `date`
+- Second level: use Pando trees inside each date partition
